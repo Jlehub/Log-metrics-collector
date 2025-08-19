@@ -5,7 +5,7 @@ pipeline {
         // Define environment variables
         APP_NAME = 'log-metrics-collector'
         DOCKER_IMAGE = "${APP_NAME}:${BUILD_NUMBER}"
-        DOCKER_REGISTRY = 'Jlehub'  // Change this to your Docker Hub username
+        DOCKER_REGISTRY = 'your-dockerhub-username'  // Change this to your Docker Hub username
         PYTHON_VERSION = '3.10'
     }
     
@@ -18,7 +18,7 @@ pipeline {
                 // Display build information
                 script {
                     echo "🏗️  Build Number: ${BUILD_NUMBER}"
-                    echo "🔀 Branch: ${BRANCH_NAME}"
+                    echo "🔀 Branch: ${env.BRANCH_NAME ?: 'main'}"
                     echo "📝 Git Commit: ${GIT_COMMIT[0..7]}"
                 }
             }
