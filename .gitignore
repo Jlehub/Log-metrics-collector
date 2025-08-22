@@ -140,6 +140,7 @@ temp/
 
 # Jenkins local development files
 jenkins-docker-compose.yml
+Dockerfile.jenkins
 jenkins/
 .jenkins/
 jenkins_home/
