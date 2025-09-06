@@ -82,6 +82,7 @@ celerybeat-schedule
 *.sage.py
 
 # Environments
+*.env
 .env
 .venv
 env/
@@ -140,7 +141,9 @@ temp/
 
 # Jenkins local development files
 jenkins-docker-compose.yml
+jenkins-fresh-steup.yml
 Dockerfile.jenkins
+jenkins_data/
 jenkins/
 .jenkins/
 jenkins_home/
@@ -200,3 +203,4 @@ database/
 run-local.sh
 deploy-local.sh
 local-setup.*
+
