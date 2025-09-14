@@ -28,23 +28,3 @@ def app_config():
         'LOG_LEVEL': 'INFO'
     }
 
-# tests/pytest.ini
-[tool:pytest]
-minversion = 6.0
-addopts = 
-    -ra 
-    -q 
-    --strict-markers
-    --cov=app
-    --cov-report=term-missing
-    --cov-report=html:htmlcov
-    --cov-report=xml:coverage.xml
-    --junit-xml=test-results.xml
-testpaths = tests
-python_files = test_*.py
-python_classes = Test*
-python_functions = test_*
-markers =
-    integration: integration tests
-    unit: unit tests
-    slow: slow running tests
