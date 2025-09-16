@@ -9,30 +9,26 @@ pipeline {
         DOCKER_LATEST = 'latest'
         
         // Build Configuration
-        PYTHON_VERSION = '3.11'
+        PYTHON_VERSION = '3.10'
         WORKSPACE_DIR = "${WORKSPACE}"
         
-        // Cache directories
-        PIP_CACHE_DIR = "${WORKSPACE}/.pip-cache"
-        VENV_DIR = "${WORKSPACE}/.venv"
-        
-        // Test Configuration - SIMPLIFIED FOR DEBUGGING
-        PYTEST_ARGS = '--verbose --tb=short --maxfail=5'
-        COVERAGE_THRESHOLD = '50'  // Lowered to avoid failures
+        // Test Configuration
+        PYTEST_ARGS = '--verbose --tb=short --cov=. --cov-report=xml --cov-report=html --junit-xml=test-results.xml'
+        COVERAGE_THRESHOLD = '70'
         
         // Docker Configuration
-        DOCKER_BUILDKIT = '1'
+        COMPOSE_PROJECT = "${APP_NAME}-${BUILD_NUMBER}"
         
         // Deployment Configuration
         STAGING_PORT = '5001'
+        PROD_PORT = '5000'
     }
     
     options {
-        // REDUCED timeout and simplified options
-        buildDiscarder(logRotator(numToKeepStr: '5'))
-        timeout(time: 20, unit: 'MINUTES')  // Reduced from 15 to 20 for debugging
+        // Build options
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
         skipStagesAfterUnstable()
-        // Remove retry and other complex options for now
     }
     
     stages {
@@ -41,261 +37,414 @@ pipeline {
                 script {
                     echo """
                     ╔══════════════════════════════════════════════════════════════╗
-                    ║                                                              ║
+                    ║               DevOps Pipeline Started                        ║
                     ║              Log & Metrics Collector                         ║
-                    ║                                                              ║
                     ╚══════════════════════════════════════════════════════════════╝
                     
                     Build Information:
                     • Application: ${APP_NAME}
                     • Build Number: ${BUILD_NUMBER}
+                    • Branch: ${env.BRANCH_NAME ?: 'main'}
                     • Git Commit: ${env.GIT_COMMIT ? env.GIT_COMMIT[0..7] : 'unknown'}
-                    • Emergency Fix Mode: ENABLED
+                    • Build Time: ${new Date()}
+                    • Jenkins Node: ${env.NODE_NAME ?: 'unknown'}
                     """
                 }
-                
-                // Create cache directories
-                sh '''
-                    mkdir -p ${PIP_CACHE_DIR}
-                    mkdir -p ${WORKSPACE}/.pytest_cache
-                    echo "Cache directories verified"
-                '''
             }
         }
         
         stage('Checkout & Validate') {
             steps {
-                echo 'Quick validation...'
+                echo 'Checking out source code and validating project structure...'
                 
                 script {
-                    // Quick validation only
-                    if (!fileExists('app.py')) {
-                        echo "WARNING: app.py not found - creating placeholder"
-                        writeFile file: 'app.py', text: '''#!/usr/bin/env python3
-print("Placeholder app for testing")
-'''
-                    }
+                    // Validate required files exist
+                    def requiredFiles = ['app.py', 'requirements-dev.txt', 'Dockerfile']
+                    def missingFiles = []
                     
-                    if (!fileExists('requirements.txt')) {
-                        echo "WARNING: requirements.txt not found - creating basic version"
-                        writeFile file: 'requirements.txt', text: '''Flask==3.1.1
-psutil==7.0.0
-requests==2.31.0
-'''
-                    }
-                    
-                    if (!fileExists('requirements-dev.txt')) {
-                        echo "Creating requirements-dev.txt"
-                        writeFile file: 'requirements-dev.txt', text: '''-r requirements.txt
-pytest==8.4.1
-pytest-cov==4.0.0
-flake8==7.3.0
-'''
-                    }
-                }
-            }
-        }
-        
-        stage('Fast Python Environment') {
-            steps {
-                echo 'Setting up Python environment with aggressive caching...'
-                
-                script {
-                    // Check if we can reuse existing environment
-                    def reuseVenv = false
-                    
-                    if (fileExists("${VENV_DIR}/bin/activate")) {
-                        try {
-                            sh '''
-                                # Quick test if existing venv works
-                                . ${VENV_DIR}/bin/activate
-                                python --version
-                                pip --version
-                                echo "Existing virtual environment is functional"
-                            '''
-                            reuseVenv = true
-                            echo "✅ REUSING existing virtual environment - MAJOR TIME SAVER!"
-                        } catch (Exception e) {
-                            echo "⚠️ Existing venv corrupted, will recreate"
-                            reuseVenv = false
+                    requiredFiles.each { file ->
+                        if (!fileExists(file)) {
+                            missingFiles.add(file)
                         }
                     }
                     
-                    if (!reuseVenv) {
-                        echo "Creating new virtual environment..."
-                        sh '''
-                            # Remove old venv if corrupted
-                            rm -rf ${VENV_DIR}
-                            
-                            # Create fresh venv
-                            python3 -m venv ${VENV_DIR}
-                        '''
+                    if (missingFiles) {
+                        error("Missing required files: ${missingFiles.join(', ')}")
                     }
                     
-                    // Install dependencies with caching
-                    sh '''
-                        # Activate virtual environment
-                        . ${VENV_DIR}/bin/activate
-                        
-                        # Set pip cache directory
-                        export PIP_CACHE_DIR=${PIP_CACHE_DIR}
-                        
-                        # Upgrade pip quickly
-                        pip install --upgrade pip --quiet
-                        
-                        # Install dependencies with maximum caching
-                        echo "Installing dependencies with cache optimization..."
-                        pip install -r requirements-dev.txt --cache-dir ${PIP_CACHE_DIR}
-                        
-                        echo "✅ Environment setup complete"
-                        echo "Installed packages: $(pip list | wc -l)"
-                    '''
+                    echo "Project structure validation passed"
+                    
+                    // Display project files
+                    sh 'find . -name "*.py" -o -name "*.yml" -o -name "*.yaml" -o -name "*.json" -o -name "Dockerfile*" | head -20'
                 }
             }
         }
         
-        stage('Create Test Structure') {
+        stage('Python Environment Setup') {
             steps {
-                echo 'Setting up minimal test infrastructure...'
+                echo 'Setting up Python environment and dependencies...'
                 
                 sh '''
-                    # Create tests directory structure
+                    # Create virtual environment
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    
+                    # Upgrade pip
+                    pip install --upgrade pip
+                    
+                    # Install application dependencies
+                    pip install -r requirements-dev.txt
+                    
+                    # Install testing and development dependencies
+                    pip install pytest pytest-cov pytest-mock pytest-html
+                    pip install flake8 black bandit safety
+                    pip install requests  # for integration tests
+                    
+                    echo "Python environment setup complete"
+                    echo "Installed packages:"
+                    pip list
+                '''
+            }
+        }
+        
+        stage('Security Audit') {
+            steps {
+                echo 'Running security audit and vulnerability checks...'
+                
+                script {
+                    // Run your security audit script
+                    try {
+                        sh './security_audit.sh'
+                        echo "Security audit passed"
+                    } catch (Exception e) {
+                        echo "Security audit warnings detected: ${e.getMessage()}"
+                        currentBuild.result = 'UNSTABLE'
+                    }
+                }
+                
+                sh '''
+                    . venv/bin/activate
+                    
+                    # Check for known security vulnerabilities in dependencies
+                    echo "Checking for security vulnerabilities..."
+                    safety check --json --output safety-report.json || echo "Safety check completed with warnings"
+                    
+                    # Run Bandit security linter
+                    echo "Running Bandit security analysis..."
+                    bandit -r . -f json -o bandit-report.json || echo "Bandit analysis completed with warnings"
+                    bandit -r . --severity-level medium || echo "Bandit completed with warnings"
+                '''
+                
+                // Archive security reports
+                archiveArtifacts artifacts: 'safety-report.json,bandit-report.json', allowEmptyArchive: true
+            }
+        }
+        
+        stage('Code Quality') {
+            parallel {
+                stage('Linting') {
+                    steps {
+                        sh '''
+                            . venv/bin/activate
+                            echo "Running Flake8 linting..."
+                            
+                            # Critical errors only first
+                            flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+                            
+                            # Full linting with warnings
+                            flake8 . --count --max-complexity=10 --max-line-length=88 --statistics || echo "Linting completed with warnings"
+                        '''
+                    }
+                }
+                
+                stage('Code Formatting') {
+                    steps {
+                        sh '''
+                            . venv/bin/activate
+                            echo "Checking code formatting with Black..."
+                            black --check --diff . || (
+                                echo "Code formatting issues found. Auto-fixing..."
+                                black .
+                                echo "Code formatted automatically"
+                            )
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Unit Tests') {
+            steps {
+                echo 'Running unit tests with coverage analysis...'
+                
+                sh '''
+                    . venv/bin/activate
+                    
+                    # Ensure tests directory exists
                     mkdir -p tests
                     
-                    # Create __init__.py for tests
-                    touch tests/__init__.py
+                    # Run tests with coverage
+                    python -m pytest ${PYTEST_ARGS} tests/ || echo "Some tests failed"
                     
-                    # Create ultra-basic test file
-                    cat > tests/test_basic.py << 'EOF'
-import pytest
-
-def test_python_works():
-    """Test that Python is working"""
-    assert 1 + 1 == 2
-
-def test_imports():
-    """Test basic imports work"""
-    import sys
-    import os
-    assert True
-
-def test_flask_available():
-    """Test Flask import"""
-    try:
-        import flask
-        assert True
-    except ImportError:
-        pytest.skip("Flask not available")
-
-def test_psutil_available():
-    """Test psutil import"""
-    try:
-        import psutil
-        cpu_percent = psutil.cpu_percent(interval=0.1)
-        assert isinstance(cpu_percent, (int, float))
-    except ImportError:
-        pytest.skip("psutil not available")
-EOF
-                    echo "✅ Basic test structure created"
+                    # Generate coverage report
+                    echo "Test execution completed"
+                    
+                    # Display coverage summary
+                    coverage report --show-missing || echo "Coverage report generated"
                 '''
             }
-        }
-        
-        // SIMPLIFIED - NO PARALLEL STAGES TO AVOID HANGING
-        stage('Code Quality - Sequential') {
-            steps {
-                echo 'Running simplified code quality checks...'
-                
-                sh '''
-                    . ${VENV_DIR}/bin/activate
+            
+            post {
+                always {
+                    // Publish test results
+                    publishTestResults testResultsPattern: 'test-results.xml'
                     
-                    # Basic linting only - no failures
-                    echo "Running basic linting..."
-                    flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=${VENV_DIR} || echo "Linting completed with warnings"
+                    // Publish coverage report
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'htmlcov',
+                        reportFiles: 'index.html',
+                        reportName: 'Coverage Report'
+                    ])
                     
-                    echo "✅ Code quality check completed"
-                '''
-            }
-        }
-        
-        stage('Quick Tests') {
-            steps {
-                echo 'Running quick tests...'
-                
-                sh '''
-                    . ${VENV_DIR}/bin/activate
-                    
-                    # Run basic tests only
-                    python -m pytest ${PYTEST_ARGS} tests/test_basic.py || echo "Some tests had warnings"
-                    
-                    echo "✅ Quick tests completed"
-                '''
-            }
-        }
-        
-        stage('Docker Build - Simple') {
-            steps {
-                echo 'Building Docker image with optimizations...'
-                
-                script {
-                    // Simple Docker build
-                    sh """
-                        echo "Building Docker image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
-                        
-                        # Create simple Dockerfile if missing
-                        if [ ! -f Dockerfile ]; then
-                            cat > Dockerfile << 'EOF'
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-EXPOSE 5000
-CMD ["python", "app.py"]
-EOF
-                        fi
-                        
-                        # Build with BuildKit
-                        DOCKER_BUILDKIT=1 docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
-                        docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:${DOCKER_LATEST}
-                        
-                        echo "✅ Docker image built successfully"
-                        docker images ${DOCKER_IMAGE}
-                    """
+                    // Archive coverage data
+                    archiveArtifacts artifacts: 'coverage.xml,htmlcov/**', allowEmptyArchive: true
                 }
             }
         }
         
-        stage('Quick Container Test') {
+        stage('Quality Gate') {
             steps {
-                echo 'Quick container functionality test...'
+                script {
+                    echo 'Evaluating quality gate criteria...'
+                    
+                    // Check test coverage
+                    try {
+                        sh '''
+                            . venv/bin/activate
+                            COVERAGE=$(coverage report --format=total)
+                            echo "Current coverage: ${COVERAGE}%"
+                            
+                            if [ "${COVERAGE}" -lt "${COVERAGE_THRESHOLD}" ]; then
+                                echo "Coverage ${COVERAGE}% is below threshold ${COVERAGE_THRESHOLD}%"
+                                exit 1
+                            fi
+                            
+                            echo "Coverage quality gate passed: ${COVERAGE}% >= ${COVERAGE_THRESHOLD}%"
+                        '''
+                    } catch (Exception e) {
+                        echo "Coverage quality gate failed: ${e.getMessage()}"
+                        currentBuild.result = 'UNSTABLE'
+                    }
+                }
+            }
+        }
+        
+        stage('Docker Build') {
+            steps {
+                echo 'Building Docker image...'
                 
                 script {
+                    try {
+                        // Build Docker image
+                        sh """
+                            echo "Building Docker image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                            docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
+                            docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:${DOCKER_LATEST}
+                            
+                            echo "Docker image built successfully"
+                            docker images ${DOCKER_IMAGE}
+                        """
+                    } catch (Exception e) {
+                        error("Docker build failed: ${e.getMessage()}")
+                    }
+                }
+            }
+        }
+        
+        stage('Container Testing') {
+            steps {
+                echo 'Testing Docker container functionality...'
+                
+                script {
+                    try {
+                        sh """
+                            # Start container for testing
+                            echo "Starting test container..."
+                            docker run -d --name test-${BUILD_NUMBER} -p ${STAGING_PORT}:5000 ${DOCKER_IMAGE}:${DOCKER_TAG}
+                            
+                            # Wait for application to start
+                            sleep 15
+                            
+                            # Test health endpoint
+                            echo "Testing health endpoint..."
+                            curl -f http://localhost:${STAGING_PORT}/health || exit 1
+                            
+                            # Test metrics endpoint
+                            echo "Testing metrics endpoint..."
+                            curl -f http://localhost:${STAGING_PORT}/metrics || exit 1
+                            
+                            # Test logs endpoint
+                            echo "Testing logs endpoint..."
+                            curl -f http://localhost:${STAGING_PORT}/logs || exit 1
+                            
+                            echo "Container tests passed successfully"
+                        """
+                    } catch (Exception e) {
+                        error("Container testing failed: ${e.getMessage()}")
+                    } finally {
+                        // Always clean up test container
+                        sh """
+                            docker stop test-${BUILD_NUMBER} 2>/dev/null || echo "Container already stopped"
+                            docker rm test-${BUILD_NUMBER} 2>/dev/null || echo "Container already removed"
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Integration Tests') {
+            steps {
+                echo 'Running integration tests...'
+                
+                sh '''
+                    . venv/bin/activate
+                    
+                    # Start application container for integration tests
+                    docker run -d --name integration-${BUILD_NUMBER} -p $((${STAGING_PORT} + 1)):5000 ${DOCKER_IMAGE}:${DOCKER_TAG}
+                    sleep 10
+                    
+                    # Run integration tests against running container
+                    INTEGRATION_URL=http://localhost:$((${STAGING_PORT} + 1)) python -m pytest tests/test_integration.py -v || echo "Integration tests completed"
+                    
+                    # Cleanup
+                    docker stop integration-${BUILD_NUMBER} 2>/dev/null || echo "Container already stopped"
+                    docker rm integration-${BUILD_NUMBER} 2>/dev/null || echo "Container already removed"
+                '''
+            }
+        }
+        
+        stage('Deploy to Staging') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'develop'
+                }
+            }
+            steps {
+                echo 'Deploying to staging environment...'
+                
+                script {
+                    try {
+                        sh """
+                            # Stop existing staging container
+                            docker stop ${APP_NAME}-staging 2>/dev/null || echo "No existing staging container"
+                            docker rm ${APP_NAME}-staging 2>/dev/null || echo "No existing staging container"
+                            
+                            # Deploy new version
+                            docker run -d \
+                                --name ${APP_NAME}-staging \
+                                --restart unless-stopped \
+                                -p ${STAGING_PORT}:5000 \
+                                -e ENVIRONMENT=staging \
+                                -e BUILD_NUMBER=${BUILD_NUMBER} \
+                                ${DOCKER_IMAGE}:${DOCKER_TAG}
+                            
+                            # Wait for deployment
+                            sleep 10
+                            
+                            # Verify deployment
+                            curl -f http://localhost:${STAGING_PORT}/health
+                            
+                            echo "Staging deployment successful!"
+                            echo "Application available at: http://localhost:${STAGING_PORT}"
+                        """
+                    } catch (Exception e) {
+                        error("Staging deployment failed: ${e.getMessage()}")
+                    }
+                }
+            }
+        }
+        
+        stage('Performance Test') {
+            steps {
+                echo 'Running basic performance tests...'
+                
+                sh '''
+                    . venv/bin/activate
+                    
+                    # Simple load test using curl
+                    echo "Running performance tests..."
+                    
+                    for i in {1..10}; do
+                        curl -s -w "Response time: %{time_total}s\\n" http://localhost:${STAGING_PORT}/health > /dev/null
+                    done
+                    
+                    echo "Performance tests completed"
+                '''
+            }
+        }
+        
+        stage('Create Release Artifacts') {
+            when {
+                branch 'main'
+            }
+            steps {
+                echo 'Creating release artifacts...'
+                
+                script {
+                    // Create git tag
                     sh """
-                        # Start container for quick test
-                        echo "Starting test container..."
-                        docker run -d --name test-${BUILD_NUMBER} -p ${STAGING_PORT}:5000 ${DOCKER_IMAGE}:${DOCKER_TAG}
+                        git tag -a "v1.0.${BUILD_NUMBER}" -m "Release v1.0.${BUILD_NUMBER} - Build ${BUILD_NUMBER}"
+                        echo "Git tag created: v1.0.${BUILD_NUMBER}"
+                    """
+                    
+                    // Export Docker image
+                    sh """
+                        echo "Exporting Docker image..."
+                        docker save ${DOCKER_IMAGE}:${DOCKER_TAG} | gzip > ${APP_NAME}-${BUILD_NUMBER}.tar.gz
                         
-                        # Quick wait
-                        sleep 5
-                        
-                        # Basic connectivity test
-                        if docker ps | grep test-${BUILD_NUMBER}; then
-                            echo "✅ Container started successfully"
-                        else
-                            echo "⚠️ Container may have issues but continuing"
-                        fi
+                        echo "Creating deployment manifest..."
+                        cat > deployment-manifest-${BUILD_NUMBER}.yaml << EOF
+apiVersion: v1
+kind: Deployment
+metadata:
+  name: ${APP_NAME}
+  labels:
+    app: ${APP_NAME}
+    version: v1.0.${BUILD_NUMBER}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${APP_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${APP_NAME}
+        version: v1.0.${BUILD_NUMBER}
+    spec:
+      containers:
+      - name: ${APP_NAME}
+        image: ${DOCKER_IMAGE}:${DOCKER_TAG}
+        ports:
+        - containerPort: 5000
+        env:
+        - name: BUILD_NUMBER
+          value: "${BUILD_NUMBER}"
+        - name: ENVIRONMENT
+          value: "production"
+EOF
+                        echo "Release artifacts created"
                     """
                 }
             }
             
             post {
                 always {
-                    // Always clean up
-                    sh """
-                        docker stop test-${BUILD_NUMBER} 2>/dev/null || echo "Container already stopped"
-                        docker rm test-${BUILD_NUMBER} 2>/dev/null || echo "Container already removed"
-                    """
+                    archiveArtifacts artifacts: '*.tar.gz,deployment-manifest-*.yaml', allowEmptyArchive: true
                 }
             }
         }
@@ -303,58 +452,75 @@ EOF
     
     post {
         always {
-            echo 'Emergency fix pipeline cleanup...'
+            echo 'Pipeline cleanup and reporting...'
             
             script {
+                // Display final build summary
                 def buildSummary = """
                 ╔══════════════════════════════════════════════════════════════╗
-                ║                        BUILD SUMMARY                         ║
+                ║                    Build Summary                             ║
                 ╚══════════════════════════════════════════════════════════════╝
                 
                 Application: ${APP_NAME}
                 Build Number: ${BUILD_NUMBER}
                 Build Status: ${currentBuild.currentResult}
                 Duration: ${currentBuild.durationString}
+                Git Commit: ${env.GIT_COMMIT ? env.GIT_COMMIT[0..7] : 'unknown'}
                 Docker Image: ${DOCKER_IMAGE}:${DOCKER_TAG}
-                
-                Cache Status:
                 """
                 
                 echo buildSummary
                 
-                // Show cache sizes
+                // Cleanup
                 sh '''
-                    echo "Current cache sizes:"
-                    du -sh ${PIP_CACHE_DIR} ${VENV_DIR} 2>/dev/null || echo "Cache directories not found"
+                    # Clean up virtual environment
+                    rm -rf venv 2>/dev/null || echo "No venv to clean"
                     
-                    # Minimal cleanup only
-                    docker image prune -f 2>/dev/null || echo "No images to prune"
+                    # Clean up old Docker images (keep last 5 builds)
+                    docker images ${DOCKER_IMAGE} --format "table {{.Repository}}:{{.Tag}}" | tail -n +6 | xargs -r docker rmi 2>/dev/null || echo "No old images to clean"
+                    
+                    # Clean up dangling images
+                    docker image prune -f 2>/dev/null || echo "No dangling images to clean"
                 '''
             }
         }
         
         success {
-            echo '✅ Emergency fix pipeline completed successfully!'
-            echo "🎉 Build time: ${currentBuild.durationString}"
-            echo "🔧 Emergency optimizations working"
-            echo "📋 Next: Gradually add back full features"
+            echo 'Pipeline completed successfully!'
+            echo "✅ All stages passed"
+            echo "🚀 Application deployed to staging: http://localhost:${STAGING_PORT}"
+            echo "📊 Coverage report available in build artifacts"
+            echo "🐳 Docker image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
+            
+            // You can add Slack/email notifications here
+            // slackSend channel: '#devops', color: 'good', 
+            //     message: "✅ ${APP_NAME} Build ${BUILD_NUMBER} SUCCESS"
         }
         
         failure {
-            echo '❌ Emergency fix failed - but this gives us debug info'
-            echo "🔍 Stage that failed: ${env.STAGE_NAME}"
-            echo "⏱️ Failed at: ${currentBuild.durationString}"
+            echo 'Pipeline failed!'
+            echo "❌ Build failed at stage: ${env.STAGE_NAME}"
+            echo "🔍 Check logs for details"
+            echo "💡 Common solutions:"
+            echo "  - Check Docker daemon is running"
+            echo "  - Verify all required files are committed"
+            echo "  - Ensure tests are passing locally"
             
-            // Emergency cleanup
+            // Cleanup failed containers
             sh '''
-                docker ps -a | grep test-${BUILD_NUMBER} | awk '{print $1}' | xargs -r docker rm -f 2>/dev/null || true
+                docker stop test-${BUILD_NUMBER} integration-${BUILD_NUMBER} 2>/dev/null || true
+                docker rm test-${BUILD_NUMBER} integration-${BUILD_NUMBER} 2>/dev/null || true
             '''
+            
+            // You can add failure notifications here
+            // slackSend channel: '#devops', color: 'danger',
+            //     message: "❌ ${APP_NAME} Build ${BUILD_NUMBER} FAILED"
         }
         
-        aborted {
-            echo '⚠️ Build was aborted - but we learned something'
-            echo "⏱️ Aborted after: ${currentBuild.durationString}"
-            echo "🔧 Check which stage was running when aborted"
+        unstable {
+            echo 'Pipeline completed with warnings'
+            echo "⚠️ Some quality checks failed but build continued"
+            echo "📋 Review test results and coverage reports"
         }
     }
 }
