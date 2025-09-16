@@ -32,7 +32,7 @@ pipeline {
     options {
         // Build options - Reduced timeout
         buildDiscarder(logRotator(numToKeepStr: '10'))
-        timeout(time: 15, unit: 'MINUTES')  // Reduced from 30 to 15 minutes
+        timeout(time: 35, unit: 'MINUTES')  
         skipStagesAfterUnstable()
     }
     
